@@ -1,5 +1,3 @@
-## Animation Calculation
-
 Project simulated trajectory and solutions onto canvas to generate video. 
 
 **Samples https://www.pixiv.net/en/users/130297007, https://ub001.itch.io**

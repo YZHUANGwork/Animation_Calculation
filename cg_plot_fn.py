@@ -1,0 +1,394 @@
+import numpy as np
+import matplotlib
+import math
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon as MplPolygon
+from matplotlib.collections import PatchCollection, LineCollection
+from matplotlib.colors import LinearSegmentedColormap
+
+rng = np.random.default_rng(42)
+
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon as MplPolygon
+from matplotlib.collections import PatchCollection
+import cg_color_fn as cgc
+
+
+def make_hex_scene(IMG_W=1280, IMG_H=720, HEX_R=22, DPI=100, hex_index = True, z_order_max = 5):
+    HEX_apothem = np.sqrt(3)/2 * HEX_R
+    HEX_SIDE_LEN = HEX_R
+    
+    dx_hex_center = HEX_apothem * 2
+    dy_hex_center = HEX_SIDE_LEN * 0.5 + HEX_R
+    n_cols = int(IMG_W / dx_hex_center) + 3
+    n_rows = int(IMG_H / dy_hex_center) + 3
+    
+    detail_info = [IMG_W, IMG_H, HEX_R, dx_hex_center, dy_hex_center]
+    
+    hex_vertex_angles = np.radians(np.arange(30., 390, 60))
+    hex_vertex_coord = HEX_R * np.column_stack([np.cos(hex_vertex_angles), np.sin(hex_vertex_angles)])
+
+    patches = []
+    hex_center_coords = []
+    hex_rc_arr = []
+
+    for row_i in range(-1, n_rows):
+        for col_i in range(-1, n_cols):
+            x_hex_center = col_i * dx_hex_center + (HEX_apothem if row_i % 2 == 1 else 0)
+            y_hex_center = row_i * dy_hex_center
+            verts = hex_vertex_coord + np.array([x_hex_center, y_hex_center])
+            patches.append(MplPolygon(verts, closed=True))
+            hex_center_coords.append((x_hex_center, y_hex_center))
+            hex_rc_arr.append((row_i, col_i))
+
+    hex_center_coords = np.array(hex_center_coords)
+    hex_ntotal = len(patches)
+    hex_colors = np.full((hex_ntotal, 3), 0.96)
+
+    fig, ax = plt.subplots(figsize=(IMG_W/DPI, IMG_H/DPI), dpi=DPI)
+    fig.patch.set_facecolor('#f5f5f5')
+    ax.set_facecolor('#f5f5f5')
+    ax.set_xlim(0, IMG_W)
+    ax.set_ylim(IMG_H, 0)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+
+    pc = PatchCollection(patches, facecolor=hex_colors,
+                         edgecolor='#cccccc', linewidth=0.4, zorder=0)
+    ax.add_collection(pc)
+    
+    if hex_index:
+        for i, (row_i, col_i) in enumerate(hex_rc_arr):
+            x_hex_center, y_hex_center = hex_center_coords[i]
+            if -HEX_R <= x_hex_center <= IMG_W + HEX_R and -HEX_R <= y_hex_center <= IMG_H + HEX_R:
+                ax.text(x_hex_center, y_hex_center-3, str(row_i), ha='center', va='center', fontsize=3.5, color='#993333', zorder=z_order_max)
+                ax.text(x_hex_center, y_hex_center+4, str(col_i), ha='center', va='center', fontsize=3.5, color='#333399', zorder=z_order_max)
+
+        ax.add_collection(pc)
+    
+    
+    return fig, ax, patches, hex_colors, hex_center_coords, hex_rc_arr, pc, detail_info
+
+
+def hex_neighbours(row, col):
+    """6 neighbours for offset hex grid (flat-top pointy-top)."""
+    if row % 2 == 0:
+        return [
+            (row-1, col-1), (row-1, col),
+            (row,   col-1), (row,   col+1),
+            (row+1, col-1), (row+1, col),
+        ]
+    else:
+        return [
+            (row-1, col),   (row-1, col+1),
+            (row,   col-1), (row,   col+1),
+            (row+1, col),   (row+1, col+1),
+        ]
+    
+
+def hex_neighbours_n(row, col, n=1, keep_origin = True, return_frontier=False):
+    region = {(row, col)}
+    frontier = {(row, col)}
+    for _ in range(n):
+        new_frontier = set()
+        for r, c in frontier:
+            for nb in hex_neighbours(r, c):
+                if nb not in region:
+                    new_frontier.add(nb)
+                    region.add(nb)
+        frontier = new_frontier
+    if keep_origin== False:
+        region.discard((row, col))
+    if return_frontier:
+        return list(region), list(frontier)
+    return list(region)
+
+
+def world_metres_to_pixel(x, y, IMG_W, IMG_H, canvas_physical_x_range=None, canvas_physical_y_range=None):
+    """
+    Map a trajectory position (x, y) to pixel coordinates (px_x, px_y).
+    (x,y) can be any two of the cartesian coordinate
+    vertical is flipped because world-vertical points up but image-vertical points down.
+ 
+    canvas_physical_x_range, canvas_physical_y_range: optional (min, max)
+    tuples giving the physical size that the FULL CANVAS (the whole
+    IMG_W x IMG_H image) represents. If omitted (default), falls back to
+    the original behavior of normalizing against x.min()/x.max() of the
+    data itself -- which stretches whatever's passed in to fill the
+    entire canvas. Pass an explicit canvas physical size (bigger than the
+    data's own extent) to place a small region as a sub-area instead.
+    """
+    x_min, x_max = canvas_physical_x_range if canvas_physical_x_range is not None else (x.min(), x.max())
+    y_min, y_max = canvas_physical_y_range if canvas_physical_y_range is not None else (y.min(), y.max())
+    px_x = (x - x_min) / (x_max - x_min) * IMG_W
+    px_y = (1.0 - (y - y_min) / (y_max - y_min)) * IMG_H
+    return px_x, px_y
+
+def world_metres_to_hex_index(x, y, detail_info, canvas_physical_x_range=None, canvas_physical_y_range=None):
+    """
+    Map arrays of physical positions (x_m, z_m) to flat hex indices.
+ 
+    Steps:
+      1. Convert world metres -> pixel coords via world_metres_to_pixel()
+      2. Snap pixel-y to the nearest hex row  (divide by dy_hex_center)
+      3. Snap pixel-x to the nearest hex col  (subtract odd-row stagger, divide by dx_hex_center)
+      4. Look up (row, col) in rc_to_idx to get the flat hex index
+ 
+    canvas_physical_x_range, canvas_physical_y_range: optional (min, max)
+    physical size the full canvas represents, passed straight through to
+    world_metres_to_pixel -- see its docstring. Omit for the original
+    fill-the-whole-canvas behavior.
+    """
+    IMG_W, IMG_H, HEX_R, dx_hex_center, dy_hex_center = detail_info
+    px_x, px_y = world_metres_to_pixel(x, y, IMG_W, IMG_H,
+                                        canvas_physical_x_range=canvas_physical_x_range,
+                                        canvas_physical_y_range=canvas_physical_y_range)
+    hex_row = np.round(px_y / dy_hex_center).astype(int)
+    
+    HEX_apothem = np.sqrt(3)/2 * HEX_R
+    odd_row_stagger = np.where(hex_row % 2 == 1, HEX_apothem, 0.0)
+    hex_col = np.round((px_x - odd_row_stagger) / dx_hex_center).astype(int)
+ 
+    # nearest hex row
+    hex_row = np.round(px_y / dy_hex_center).astype(int)
+ 
+    # odd rows are staggered right by half a column width
+    odd_row_stagger = np.where(hex_row % 2 == 1, HEX_apothem, 0.0)
+ 
+    # nearest hex col
+    hex_col = np.round((px_x - odd_row_stagger) / dx_hex_center).astype(int)
+ 
+    
+    return list(zip(hex_row, hex_col))#[(row1,col1), (row2,col2), (row3,col3), ...]
+
+def fn2grid(X, Y, DOMAIN_W_SCALE ,DOMAIN_H_SCALE, PIVOT_ROW, PIVOT_COL, PIVOT_ROW_X, PIVOT_COL_Y, detail_info, 
+            square_H = False,square_W = False, EPS_DOMAIN = 1e-6, input_PHYSICAL_size = None, return_DOMAIN = False):
+    IMG_W_SCENE, IMG_H_SCENE, HEX_R, dx_hex_center, dy_hex_center = detail_info
+    if input_PHYSICAL_size !=None:
+        print('input_PHYSICAL_size')
+        CANVAS_PHYSICAL_W = input_PHYSICAL_size[0]
+        CANVAS_PHYSICAL_H =input_PHYSICAL_size[1]
+    else:
+        DOMAIN_W = max(X.max() - X.min(), EPS_DOMAIN)#X.max() - X.min()
+        DOMAIN_H = max(Y.max() - Y.min(), EPS_DOMAIN)#Y.max() - Y.min()
+        CANVAS_PHYSICAL_W = DOMAIN_W*DOMAIN_W_SCALE
+        CANVAS_PHYSICAL_H = DOMAIN_H*DOMAIN_H_SCALE
+
+        if square_H:
+            CANVAS_PHYSICAL_H = DOMAIN_H * DOMAIN_H_SCALE
+            CANVAS_PHYSICAL_W = CANVAS_PHYSICAL_H * (IMG_W_SCENE / IMG_H_SCENE)
+        elif square_W:
+            CANVAS_PHYSICAL_W = DOMAIN_W * DOMAIN_W_SCALE 
+            CANVAS_PHYSICAL_H = CANVAS_PHYSICAL_W* (IMG_H_SCENE/IMG_W_SCENE)
+            
+    canvas_physical_x_range = (0, CANVAS_PHYSICAL_W)
+    canvas_physical_y_range = (0, CANVAS_PHYSICAL_H)
+    
+    
+    px0, py0 = hex_center_pixel(PIVOT_ROW, PIVOT_COL, detail_info)
+    OFFSET_X = px0 * CANVAS_PHYSICAL_W / IMG_W_SCENE - PIVOT_ROW_X
+    OFFSET_Y = CANVAS_PHYSICAL_H * (1.0 - py0 / IMG_H_SCENE) - PIVOT_COL_Y
+    grid_hex_rc = world_metres_to_hex_index(
+        X + OFFSET_X, Y + OFFSET_Y, detail_info,
+        canvas_physical_x_range=canvas_physical_x_range,
+        canvas_physical_y_range=canvas_physical_y_range,
+    )
+    if return_DOMAIN:
+        return grid_hex_rc, DOMAIN_W, DOMAIN_H, CANVAS_PHYSICAL_W, CANVAS_PHYSICAL_H
+    else:
+        return grid_hex_rc
+
+
+def average_grid_to_hex_scene(grid_hex_rc, hex_rc_arr, values, base_hex_colors,
+                         colors, alpha, vmin=None, vmax=None, weight_by_value=True):
+    """
+    alpha can also be a breakpoint list [(position, alpha_value), ...],
+    interpolated across `a` the same way `colors` is -- so opacity itself
+    can vary along the ramp (e.g. 0.1 near the low end, 1.0 near the high
+    end) instead of being one constant number.
+    """
+    rc_to_idx_ = {rc: i for i, rc in enumerate(hex_rc_arr)}
+    hex_idx_per_point = np.array([rc_to_idx_.get(rc, -1) for rc in grid_hex_rc])
+    valid = hex_idx_per_point >= 0
+    hex_idx_valid = hex_idx_per_point[valid]
+    vals_valid = np.asarray(values)[valid]
+
+    n_hex = len(hex_rc_arr)
+    counts = np.bincount(hex_idx_valid, minlength=n_hex)
+    sums = np.bincount(hex_idx_valid, weights=vals_valid, minlength=n_hex)
+    hex_positions = np.unique(hex_idx_valid)
+    avg_val = sums[hex_positions] / counts[hex_positions]
+
+    if vmin is None:
+        vmin = avg_val.min()
+    if vmax is None:
+        vmax = avg_val.max()
+    span = vmax - vmin
+    span = span if span > 0 else 1.0
+    a = np.clip((avg_val - vmin) / span, 0.0, 1.0)
+
+    breakpoints = np.array([p for p, c in colors])
+    rgb_list = np.array([cgc.hex_to_rgb(c) for p, c in colors])
+    color = np.stack([np.interp(a, breakpoints, rgb_list[:, ch]) for ch in range(3)], axis=-1)
+
+    # NEW: alpha can be a scalar (unchanged) or a breakpoint ramp like colors
+    alpha_a = np.full_like(a, alpha, dtype=float)
+    blend_weight = (alpha_a * a if weight_by_value else alpha_a)[:, None]
+   
+    blend_weight = (alpha_a * a if weight_by_value else alpha_a)[:, None]
+    blended = (1 - blend_weight) * base_hex_colors[hex_positions] + blend_weight * color
+    return hex_positions, blended
+
+
+
+def _cell_dist_from_pivot(cell, piv_x, piv_y, detail_info):
+    r, c = cell
+    cx, cy = hex_center_pixel(r, c, detail_info)
+    return (cx - piv_x) ** 2 + (cy - piv_y) ** 2
+        
+        
+def steps_to_Q(n_steps, end_weight=0.05):
+    # after n recursive steps with fixed Q, color fraction remaining = sigmoid(Q)^n
+    # solve sigmoid(Q)^n = end_weight for Q
+    w = end_weight ** (1.0 / n_steps)
+    Q = np.log(w / (1 - w))
+    return np.array([[Q]])
+
+
+def get_number_of_terms(last_term, first_term, diff=1):
+    return (last_term - first_term )/diff+1
+
+
+def select_mask(sub_coord, total_coord):
+    sub_rcs = set(map(tuple, sub_coord))
+    mask = np.array([tuple(rc) in sub_rcs for rc in total_coord])
+    return mask
+
+def get_hex_corners(center_row, center_col, n_size):
+    shape = hex_neighbours_n(center_row,center_col, n=n_size, keep_origin = False, return_frontier=True
+              )[-1]          
+    return [(min(r for r,c in shape), min(c for r,c in shape if r==min(r for r,c in shape))),
+            (min(r for r,c in shape), max(c for r,c in shape if r==min(r for r,c in shape))),
+            
+            (center_row, max(c for r,c in shape if r==center_row)),
+            (center_row, min(c for r,c in shape if r==center_row)),
+            
+            (max(r for r,c in shape), min(c for r,c in shape if r==max(r for r,c in shape))),
+            (max(r for r,c in shape), max(c for r,c in shape if r==max(r for r,c in shape))),
+            
+           ]
+def random_walks(start, n_walks, hex_rc_arr, down_weight=1, left_weight=1, right_weight=1, up_weight=1, seed=None):
+
+    valid_cells = {tuple(rc) for rc in hex_rc_arr}
+
+    def _single_walk(start_row_i, start_col_i):
+        path = []
+        row_i, col_i = start_row_i, start_col_i
+        visited = set()
+
+        while True:
+            path.append((row_i, col_i))
+            visited.add((row_i, col_i))
+
+            nbrs = hex_neighbours(row_i, col_i)
+            weighted = []
+            for nr, nc in nbrs:
+                if (nr, nc) in visited or (nr, nc) not in valid_cells:
+                    continue
+                if nr > row_i:
+                    w = down_weight
+                elif nr < row_i:
+                    w = up_weight
+                elif nc < col_i:
+                    w = left_weight
+                else:
+                    w = right_weight
+                weighted.extend([(nr, nc)] * w)
+
+            if not weighted:
+                break
+
+            row_i, col_i = weighted[rng.integers(len(weighted))]
+
+        return path
+
+    rng = np.random.default_rng(seed)
+    start_row_i, start_col_i = start
+    return [_single_walk(start_row_i, start_col_i) for _ in range(n_walks)]
+
+def hex_center_pixel(row, col, detail_info):
+    """Same formula make_hex_scene uses internally to place a hex center."""
+    IMG_W, IMG_H, HEX_R, dx_hex_center, dy_hex_center = detail_info
+    apothem = np.sqrt(3)/2 * HEX_R
+    row, col = np.asarray(row), np.asarray(col)
+    x = col * dx_hex_center + np.where(row % 2 == 1, apothem, 0.0)
+    y = row * dy_hex_center
+    return x, y
+ 
+def pixel_to_nearest_hex(x, y, detail_info):
+    """Inverse of hex_center_pixel -- snap a pixel point to its nearest hex (row, col)."""
+    IMG_W, IMG_H, HEX_R, dx_hex_center, dy_hex_center = detail_info
+    apothem = np.sqrt(3)/2 * HEX_R
+    row = np.round(y / dy_hex_center).astype(int)
+    stagger = np.where(row % 2 == 1, apothem, 0.0)
+    col = np.round((x - stagger) / dx_hex_center).astype(int)
+    return row, col
+ 
+def rotate_hex_shape(coords, pivot_rc, angle_rad, detail_info):
+    #TOP VIEW OF ROTATE
+    """Rotate a set of hex (row, col) coordinates about a pivot hex cell by
+    an arbitrary angle. Offset hex coords don't rotate cleanly on their own
+    (only at 60-deg multiples), so this goes through pixel space: convert
+    each cell to its true pixel center, rotate about the pivot's pixel
+    center, then snap back to the nearest hex cell.
+    """
+    coords = np.asarray(coords).reshape(-1, 2)
+    if coords.shape[0] == 0:
+        return []
+    rows, cols = coords[:, 0], coords[:, 1]
+    x, y = hex_center_pixel(rows, cols, detail_info)
+ 
+    px0, py0 = hex_center_pixel(pivot_rc[0], pivot_rc[1], detail_info)
+    dx, dy = x - px0, y - py0
+ 
+    c, s = np.cos(angle_rad), np.sin(angle_rad)
+    x_rot = px0 + c*dx - s*dy
+    y_rot = py0 + s*dx + c*dy
+ 
+    row_rot, col_rot = pixel_to_nearest_hex(x_rot, y_rot, detail_info)
+    return list(dict.fromkeys(zip(row_rot.tolist(), col_rot.tolist())))   # dedupe, keep order
+
+
+
+def foreshorten_hex_shape(coords, pivot_rc, scale, detail_info):
+    #SIDE VIEW OF ROTATE
+    """Side-view foreshortening: shrink only the horizontal (column) extent
+    toward the pivot's column, in pixel space, then snap back to the
+    nearest column at each hex's OWN unchanged row. Row/vertical position
+    is never touched -- scale=1 keeps columns unmoved; scale->0 collapses
+    every column onto the pivot's column (a single "dot" hex).
+    Distinct from rotate_hex_shape, which rotates instead of scaling --
+    the shrink here comes from fewer distinct hex cells being covered
+    after nearby scaled points collapse onto the same column.
+    """
+    coords = np.asarray(coords).reshape(-1, 2)
+    if coords.shape[0] == 0:
+        return []
+    rows, cols = coords[:, 0], coords[:, 1]
+    x, _y = hex_center_pixel(rows, cols, detail_info)
+    px0, _py0 = hex_center_pixel(pivot_rc[0], pivot_rc[1], detail_info)
+    x_scaled = px0 + scale * (x - px0)
+ 
+    IMG_W, IMG_H, HEX_R, dx_hex_center, dy_hex_center = detail_info
+    apothem = np.sqrt(3) / 2 * HEX_R
+    stagger = np.where(rows % 2 == 1, apothem, 0.0)
+    col_new = np.round((x_scaled - stagger) / dx_hex_center).astype(int)
+ 
+    rows_int = rows.astype(int)
+    return list(dict.fromkeys(zip(rows_int.tolist(), col_new.tolist())))
+

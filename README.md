@@ -1,4 +1,4 @@
-# Animation Calculation
+## Animation Calculation
 
 Project simulated trajectory and solutions onto canvas to generate video. 
 

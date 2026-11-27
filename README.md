@@ -18,7 +18,10 @@ Unlike ACG_and_simulation's anime fan art, this repo's animations are original.
 <summary>Repository structure</summary>
 
 ```
-FUNERALMUSEUM_PART1_animation_scene.py # entry point — builds video
+Reproduce: python3 FUNERALMUSEUM_PART1_animation_scene.py
+Reproduce: python3 FUNERALMUSEUM_PART1_animation.py
+
+FUNERALMUSEUM_PART1_animation_scene.py # entry point — builds video 
 FUNERALMUSEUM_PART1_animation.py          # entry point — builds video
 └── SOLUTION_Schrodinger.py
 └── SOLN_waveinterference.py
